@@ -1,0 +1,321 @@
+//
+// Copyright (C) YuqiaoZhang(HanetakaChou)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+#ifndef _BRX_BRDF_BSLI_
+#define _BRX_BRDF_BSLI_ 1
+
+#include "brx_shader_language.bsli"
+#include "brx_math_consts.bsli"
+
+brx_float3 brx_lambert_sample_omega_i(in const brx_float2 xi)
+{
+	// PBR Book V3: [13.6.3 Cosine-Weighted Hemisphere Sampling](https://www.pbr-book.org/3ed-2018/Monte_Carlo_Integration/2D_Sampling_with_Multidimensional_Transformations#Cosine-WeightedHemisphereSampling)
+	// PBRT-V3: [CosineSampleHemisphere](https://github.com/mmp/pbrt-v3/blob/book/src/core/sampling.h#L155)
+	// PBR Book V4: [A.5.3 Cosine-Weighted Hemisphere Sampling](https://www.pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions#Cosine-WeightedHemisphereSampling)
+	// PBRT-V4: [SampleCosineHemisphere](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/sampling.h#L409)
+	// UE4: [CosineSampleHemisphere](https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/MonteCarlo.ush#L241)
+	// U3D: [SampleHemisphereCosine](https://github.com/Unity-Technologies/Graphics/blob/v10.8.1/com.unity.render-pipelines.core/ShaderLibrary/Sampling/Sampling.hlsl#L157)
+
+	brx_float2 d;
+	{
+		// Map uniform random numbers to $[-1, 1]^2$
+		brx_float2 u_offset = 2.0 * xi - brx_float2(1.0, 1.0);
+
+		brx_branch if (0.0 == u_offset.x && 0.0 == u_offset.y)
+		{
+			// Handle degeneracy at the origin
+			d = brx_float2(0.0, 0.0);
+		}
+		else
+		{
+			// Apply concentric mapping to point
+			brx_float r;
+			brx_float theta;
+
+			brx_branch if (brx_abs(u_offset.x) > brx_abs(u_offset.y))
+			{
+				r = u_offset.x;
+				theta = (BRX_M_PI / 4.0) * (u_offset.y / u_offset.x);
+			}
+			else
+			{
+				r = u_offset.y;
+				theta = (BRX_M_PI / 2.0) - (BRX_M_PI / 4.0) * (u_offset.x / u_offset.y);
+			}
+
+			d = r * brx_float2(brx_cos(theta), brx_sin(theta));
+		}
+	}
+
+	brx_float z = brx_sqrt(brx_max(0.0, 1.0 - brx_dot(d, d)));
+
+	brx_float3 omega_i = brx_float3(d.x, d.y, z);
+	return omega_i;
+}
+
+brx_float brx_lambert_pdf_omega_i(in const brx_float NdotL)
+{
+	// PBR Book V3: [13.6.3 Cosine-Weighted Hemisphere Sampling](https://www.pbr-book.org/3ed-2018/Monte_Carlo_Integration/2D_Sampling_with_Multidimensional_Transformations#Cosine-WeightedHemisphereSampling)
+	// PBRT-V3: [CosineHemispherePdf](https://github.com/mmp/pbrt-v3/blob/book/src/core/sampling.h#L161)
+	// PBR Book V4: [A.5.3 Cosine-Weighted Hemisphere Sampling](https://www.pbr-book.org/4ed/Sampling_Algorithms/Sampling_Multidimensional_Functions#Cosine-WeightedHemisphereSampling)
+	// PBRT-V4: [CosineHemispherePDF](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/sampling.h#L415)
+	// UE4: [CosineSampleHemisphere](https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/MonteCarlo.ush#L241)
+	// U3D: [SampleHemisphereCosine](https://github.com/Unity-Technologies/Graphics/blob/v10.8.1/com.unity.render-pipelines.core/ShaderLibrary/Sampling/Sampling.hlsl#L157)
+
+	brx_float pdf = (1.0 / BRX_M_PI) * NdotL;
+	return pdf;
+}
+
+brx_float brx_lambert_brdf_without_albedo()
+{
+	return (1.0 / BRX_M_PI);
+}
+
+brx_float3 brx_lambert_brdf(in const brx_float3 rho)
+{
+	return brx_lambert_brdf_without_albedo() * rho;
+}
+
+brx_float brx_lambert_throughput_without_albedo()
+{
+	return 1.0;
+}
+
+brx_float3 brx_lambert_throughput(in const brx_float3 rho)
+{
+	// 1/N * 1/PI * rho * L_i * NdotL / (1/PI * NdotL) = 1/N * rho * L_i
+	return brx_lambert_throughput_without_albedo() * rho;
+}
+
+// Avoid too small roughness to make the Trowbridge Reitz NDF work
+// Real-Time Rendering Fourth Edition / 9.8.1 Normal Distribution Functions: "In the Disney principled shading model, Burley[214] exposes the roughness control to users as g = r2, where r is the user-interface roughness parameter value between 0 and 1."
+// alpha = roughness * roughness;
+// https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/CapsuleLightIntegrate.ush#L94
+#define BRX_TROWBRIDGE_REITZ_ALPHA_MINIMUM (0.02 * 0.02)
+
+// Prevent the NdotV to be zero
+// UE: https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/ShadingModels.ush#L218
+// UE: https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/BRDF.ush#L34
+// U3D: [ClampNdotV](https://github.com/Unity-Technologies/Graphics/blob/v10.8.0/com.unity.render-pipelines.core/ShaderLibrary/CommonLighting.hlsl#L349)
+#define BRX_TROWBRIDGE_REITZ_NDOTV_MINIMUM 1e-5
+
+#define BRX_TROWBRIDGE_REITZ_TANGENT_SPACE_T1_LENGTH_SQUARE_MINIMUM 1e-5
+
+brx_float3 brx_trowbridge_reitz_sample_omega_h(in const brx_float2 xi, in const brx_float raw_alpha, in const brx_float3 raw_omega_o)
+{
+	// PBR Book V3: [Equation 8.12](https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MaskingandShadowing)
+	// PBRT-V3: [TrowbridgeReitzDistribution::Sample_wh](https://github.com/mmp/pbrt-v3/blob/book/src/core/microfacet.cpp#L308)
+	// PBR Book V4: [Equation 9.23](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#SamplingtheDistributionofVisibleNormals)
+	// PBRT-V4: [TrowbridgeReitzDistribution::Sample_wm](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/scattering.h#L163)
+	// UE4: [ImportanceSampleVisibleGGX](https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/MonteCarlo.ush#L380)
+	// U3D: [SampleGGXVisibleNormal](https://github.com/Unity-Technologies/Graphics/blob/v10.8.1/com.unity.render-pipelines.core/ShaderLibrary/ImageBasedLighting.hlsl#L222)
+
+	brx_float alpha = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_ALPHA_MINIMUM), raw_alpha);
+
+	brx_float3 omega_o = brx_float3(raw_omega_o.x, raw_omega_o.y, brx_max(brx_float(BRX_TROWBRIDGE_REITZ_NDOTV_MINIMUM), raw_omega_o.z));
+
+	brx_float3 omega_o_hemisphere = brx_normalize(brx_float3(omega_o.xy * alpha, omega_o.z));
+
+	brx_float3 T1;
+	{
+		brx_float3 T1_non_unit = brx_float3(-omega_o_hemisphere.y, omega_o_hemisphere.x, 0.0);
+		brx_float T1_length_square = brx_dot(T1_non_unit, T1_non_unit);
+		T1 = (T1_length_square > brx_float(BRX_TROWBRIDGE_REITZ_TANGENT_SPACE_T1_LENGTH_SQUARE_MINIMUM)) ? T1_non_unit / brx_sqrt(T1_length_square) : brx_float3(1.0, 0.0, 0.0);
+	}
+
+	brx_float3 T2 = brx_cross(omega_o_hemisphere, T1);
+
+	brx_float3 p;
+	{
+		brx_float r = brx_sqrt(brx_max(0.0, xi.x));
+		brx_float theta = 2.0 * BRX_M_PI * xi.y;
+		brx_float disk_x = r * brx_cos(theta);
+		brx_float disk_y = r * brx_sin(theta);
+
+		brx_float p_x = disk_x;
+		brx_float p_y = brx_lerp(brx_sqrt(brx_max(0.0, 1.0 - disk_x * disk_x)), disk_y, (1.0 + omega_o_hemisphere.z) * 0.5);
+
+		brx_float p_z = brx_sqrt(brx_max(0.0, 1.0 - brx_dot(brx_float2(p_x, p_y), brx_float2(p_x, p_y))));
+
+		p = brx_float3(p_x, p_y, p_z);
+	}
+
+	brx_float3 n_h = T1 * p.x + T2 * p.y + omega_o_hemisphere * p.z;
+
+	brx_float3 omega_h = brx_normalize(brx_float3(n_h.xy * alpha, brx_max(brx_float(BRX_TROWBRIDGE_REITZ_NDOTV_MINIMUM), n_h.z)));
+	return omega_h;
+}
+
+brx_float brx_trowbridge_reitz_pdf_omega_i_square_version(in const brx_float raw_alpha, in const brx_float raw_NdotV, in const brx_float square_NdotH)
+{
+	// VNDF = D * VdotH * G1 / NdotV
+	//
+	// PBR Book V3: [Equation 8.12](https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MaskingandShadowing)
+	// PBRT-V3: [MicrofacetDistribution::Pdf](https://github.com/mmp/pbrt-v3/blob/book/src/core/microfacet.cpp#L339)
+	// PBR Book V4: [Equation 9.23](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#SamplingtheDistributionofVisibleNormals)
+	// PBRT-V4: [TrowbridgeReitzDistribution::PDF](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/scattering.h#L160)
+	// UE4: [ImportanceSampleVisibleGGX](https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/MonteCarlo.ush#L380)
+	// U3D: [SampleGGXVisibleNormal](https://github.com/Unity-Technologies/Graphics/blob/v10.8.1/com.unity.render-pipelines.core/ShaderLibrary/ImageBasedLighting.hlsl#L222)
+
+	// PDF = VNDF / (4.0 * VdotH) = D * (G1 / NdotV) / 4.0
+	//
+	// PBR Book V3: [Figure 14.4](https://pbr-book.org/3ed-2018/Light_Transport_I_Surface_Reflection/Sampling_Reflection_Functions#MicrofacetBxDFs)
+	// PBRT-V3: [MicrofacetReflection::Sample_f](https://github.com/mmp/pbrt-v3/blob/book/src/core/reflection.cpp#L413)
+	// PBR Book V4: [Figure 9.30](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#x5-TheHalf-DirectionTransform)
+	// PBRT-V4: [ConductorBxDF ::Sample_f](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/bxdfs.h#L317)
+
+	brx_float pdf;
+	{
+		brx_float alpha = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_ALPHA_MINIMUM), raw_alpha);
+
+		brx_float NdotV = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_NDOTV_MINIMUM), raw_NdotV);
+
+		brx_float alpha2 = alpha * alpha;
+
+		brx_float D;
+		{
+			// Real-Time Rendering Fourth Edition: Equation 9.41
+			// PBR Book V3: [Figure 8.16](https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MicrofacetDistributionFunctions)
+			// PBRT-V3: [TrowbridgeReitzDistribution::D](https://github.com/mmp/pbrt-v3/blob/book/src/core/microfacet.cpp#L153)
+			// PBR Book V4: [Equation 9.16](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#TheMicrofacetDistribution)
+			// PBRT-V4: [TrowbridgeReitzDistribution::D](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/scattering.h#L125)
+			brx_float term_h = square_NdotH * (alpha2 - 1.0) + 1.0;
+			D = alpha2 / (BRX_M_PI * term_h * term_h);
+		}
+
+		brx_float G1_div_NdotV_div_4;
+		{
+			G1_div_NdotV_div_4 = 0.5 / (NdotV + brx_sqrt(NdotV * (NdotV - NdotV * alpha2) + alpha2));
+		}
+
+		pdf = D * G1_div_NdotV_div_4;
+	}
+
+	return pdf;
+}
+
+brx_float brx_trowbridge_reitz_pdf_omega_i(in const brx_float alpha, in const brx_float NdotV, in const brx_float NdotH)
+{
+	return brx_trowbridge_reitz_pdf_omega_i_square_version(alpha, NdotV, NdotH * NdotH);
+}
+
+brx_float brx_trowbridge_reitz_brdf_without_fresnel_square_version(in const brx_float raw_alpha, in const brx_float square_NdotH, in const brx_float raw_NdotV, in const brx_float NdotL)
+{
+	// https://pharr.org/matt/blog/2022/05/06/trowbridge-reitz
+
+	brx_float alpha = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_ALPHA_MINIMUM), raw_alpha);
+
+	brx_float NdotV = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_NDOTV_MINIMUM), raw_NdotV);
+
+	brx_float alpha2 = alpha * alpha;
+
+	brx_float D;
+	{
+		// Real-Time Rendering Fourth Edition: Equation 9.41
+		// PBR Book V3: [Figure 8.16](https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MicrofacetDistributionFunctions)
+		// PBRT-V3: [TrowbridgeReitzDistribution::D](https://github.com/mmp/pbrt-v3/blob/book/src/core/microfacet.cpp#L153)
+		// PBR Book V4: [Equation 9.16](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#TheMicrofacetDistribution)
+		// PBRT-V4: [TrowbridgeReitzDistribution::D](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/scattering.h#L125)
+		brx_float term_h = square_NdotH * (alpha2 - 1.0) + 1.0;
+		D = alpha2 / (BRX_M_PI * term_h * term_h);
+	}
+
+	brx_float V;
+	{
+		// Height-Correlated Trowbridge-Reitz
+
+		// Lambda:
+		// Real-Time Rendering Fourth Edition: Equation 9.42
+		// PBR Book V3: [Equation 8.13](https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MaskingandShadowing)
+		// PBRT-V3: [TrowbridgeReitzDistribution::Lambda](https://github.com/mmp/pbrt-v3/blob/book/src/core/microfacet.cpp#L174)
+		// PBR Book V4: [Equation9.22](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory#TheMasking-ShadowingFunction)
+		// PBRT-V4: [TrowbridgeReitzDistribution::Lambda](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/scattering.h#L143)
+		// float lambda_v = 0.5 * (-1.0 + (1.0 / NdotV) * brx_sqrt(alpha2 + (1.0 - alpha2) * NdotV * NdotV));
+		// float lambda_l = 0.5 * (-1.0 + (1.0 / NdotL) * brx_sqrt(alpha2 + (1.0 - alpha2) * NdotL * NdotL));
+
+		// G2
+		// G2 = 1.0 / (1.0 + Lambda(V) + Lambda(L)) = (2.0 * NoV * NoL) / (NoL * sqrt(alpha ^ 2 + (1.0 - alpha ^ 2) * NoV ^ 2) + NoV * sqrt(alpha ^ 2 + (1.0 - alpha ^ 2) * NoL ^ 2))
+		// G2 = 1.0 / (1.0 + lambda_v + lambda_l);
+
+		// V = G2 / (4.0 * NoV * NoL) = 0.5 / (NoL * sqrt(alpha ^ 2 + (1.0 - alpha ^ 2) * NoV ^ 2) + NoV * sqrt(alpha ^ 2 + (1.0 - alpha ^ 2) * NoL ^ 2))
+		brx_float term_v = NdotL * brx_sqrt(alpha2 + (1.0 - alpha2) * NdotV * NdotV);
+		brx_float term_l = NdotV * brx_sqrt(alpha2 + (1.0 - alpha2) * NdotL * NdotL);
+		V = (0.5 / (term_v + term_l));
+	}
+
+	brx_float D_V = D * V;
+	return D_V;
+}
+
+brx_float brx_trowbridge_reitz_brdf_without_fresnel(in const brx_float alpha, in const brx_float NdotH, in const brx_float NdotV, in const brx_float NdotL)
+{
+	return brx_trowbridge_reitz_brdf_without_fresnel_square_version(alpha, NdotH * NdotH, NdotV, NdotL);
+}
+
+brx_float3 brx_trowbridge_reitz_brdf_square_version(in const brx_float alpha, in const brx_float square_NdotH, in const brx_float NdotV, in const brx_float NdotL, in const brx_float3 f0, in const brx_float3 f90, in const brx_float VdotH)
+{
+	brx_float D_V = brx_trowbridge_reitz_brdf_without_fresnel_square_version(alpha, square_NdotH, NdotV, NdotL);
+
+	brx_float3 F;
+	{
+		// glTF Sample Renderer: [F_Schlick](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/e5646a2bf87b0871ba3f826fc2335fe117a11411/source/Renderer/shaders/brdf.glsl#L24)
+
+		brx_float x = brx_clamp(1.0 - VdotH, 0.0, 1.0);
+		brx_float x2 = x * x;
+		brx_float x5 = x * x2 * x2;
+		F = f0 + (f90 - f0) * x5;
+	}
+
+	brx_float3 brdf = D_V * F;
+	return brdf;
+}
+
+brx_float3 brx_trowbridge_reitz_brdf(in const brx_float alpha, in const brx_float NdotH, in const brx_float NdotV, in const brx_float NdotL, in const brx_float3 f0, in const brx_float3 f90, in const brx_float VdotH)
+{
+	return brx_trowbridge_reitz_brdf_square_version(alpha, NdotH * NdotH, NdotV, NdotL, f0, f90, VdotH);
+}
+
+brx_float brx_trowbridge_reitz_throughput_without_fresnel(in const brx_float raw_alpha, in const brx_float NdotL)
+{
+	brx_float alpha = brx_max(brx_float(BRX_TROWBRIDGE_REITZ_ALPHA_MINIMUM), raw_alpha);
+
+	brx_float alpha2 = alpha * alpha;
+
+	brx_float G2_div_G1 = brx_min(2.0 * NdotL / (NdotL + brx_sqrt(NdotL * (NdotL - NdotL * alpha2) + alpha2)), 1.0);
+	return G2_div_G1;
+}
+
+brx_float3 brx_trowbridge_reitz_throughput(in const brx_float alpha, in const brx_float NdotL, in const brx_float3 f0, in const brx_float3 f90, in const brx_float VdotH)
+{
+	brx_float G2_div_G1 = brx_trowbridge_reitz_throughput_without_fresnel(alpha, NdotL);
+
+	brx_float3 F;
+	{
+		// glTF Sample Renderer: [F_Schlick](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/e5646a2bf87b0871ba3f826fc2335fe117a11411/source/Renderer/shaders/brdf.glsl#L24)
+
+		brx_float x = brx_clamp(1.0 - VdotH, 0.0, 1.0);
+		brx_float x2 = x * x;
+		brx_float x5 = x * x2 * x2;
+		F = f0 + (f90 - f0) * x5;
+	}
+
+	// D * G2 * F / (4.0 * NdotV * NdotL) * NdotL / (D * (G1 / NdotV) / 4.0) = (G2 / G1) * F
+	brx_float3 G2_div_G1_mul_F = G2_div_G1 * F;
+	return G2_div_G1_mul_F;
+}
+
+#endif
