@@ -1,0 +1,74 @@
+//
+// Copyright (C) YuqiaoZhang(HanetakaChou)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
+
+#ifndef _BRX_BRDF_BSLI_
+#define _BRX_BRDF_BSLI_ 1
+
+#include "brx_shader_language.bsli"
+#include "brx_math_consts.bsli"
+
+brx_float3 brx_brdf_diffuse_lambert(brx_float3 diffuse_color)
+{
+	return (diffuse_color * (1.0 / BRX_M_PI));
+}
+
+// https://pharr.org/matt/blog/2022/05/06/trowbridge-reitz
+
+brx_float brx_brdf_specular_trowbridge_reitz_ndf(brx_float alpha, brx_float NdotH)
+{
+	// Real-Time Rendering Fourth Edition / 9.8.1 Normal Distribution Functions: "In the Disney principled shading model, Burley[214] exposes the roughness control to users as g = r2, where r is the user-interface roughness parameter value between 0 and 1."
+	// brx_float alpha = roughness * roughness;
+
+	// Equation 9.41 of Real-Time Rendering Fourth Edition: "Although **Trowbridge-Reitz distribution** is technically the correct name"
+	// Equation 8.11 of PBR Book: https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MicrofacetDistributionFunctions
+	brx_float alpha2 = alpha * alpha;
+	brx_float denominator = 1.0 + NdotH * (NdotH * alpha2 - NdotH);
+	brx_float D = (1.0 / BRX_M_PI) * (alpha2 / (denominator * denominator));
+	
+	return D;
+}
+
+float brx_brdf_specular_trowbridge_reitz_visibility(float alpha, float NdotV, float NdotL)
+{
+	// Height-Correlated Trowbridge-Reitz
+
+	// Lambda:
+	// Equation 8.13 of PBR Book: https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MaskingandShadowing
+	// Equation 9.42 of Real-Time Rendering Fourth Edition
+	// Figure 8.18 of PBR Book: https://pbr-book.org/3ed-2018/Reflection_Models/Microfacet_Models#MaskingandShadowing
+	// Lambda(V) = 0.5*(-1.0 + (1.0/NoV)*sqrt(alpha^2 + (1.0 - alpha^2)*NoV^2))
+	// Lambda(L) = 0.5*(-1.0 + (1.0/NoL)*sqrt(alpha^2 + (1.0 - alpha^2)*NoL^2))
+
+	// G2
+	// Equation 9.31 of Real-Time Rendering Fourth Edition
+	// PBR Book / 8.4.3 Masking and Shadowing: "A more accurate model can be derived assuming that microfacet visibility is more likely the higher up a given point on a microface"
+	// G2 = 1.0/(1.0 + Lambda(V) + Lambda(L)) = (2.0*NoV*NoL)/(NoL*sqrt(alpha^2 + (1.0 - alpha^2)*NoV^2) + NoV*sqrt(alpha^2 + (1.0 - alpha^2)*NoL^2))
+
+	// V = G2/(4.0*NoV*NoL) = 0.5/(NoL*sqrt(alpha^2 + (1.0 - alpha^2)*NoV^2) + NoV*sqrt(alpha^2 + (1.0 - alpha^2)*NoL^2))
+
+	// float alpha2 = alpha * alpha;
+	// float term_v = NdotL * sqrt(alpha2 + (1.0 - alpha2) * NdotV * NdotV);
+	// float term_l = NdotV * sqrt(alpha2 + (1.0 - alpha2) * NdotL * NdotL);
+	// UE: [Vis_SmithJointApprox](https://github.com/EpicGames/UnrealEngine/blob/4.27/Engine/Shaders/Private/BRDF.ush#L380)
+	brx_float term_v = NdotL * (alpha + (1.0 - alpha) * NdotV);
+	brx_float term_l = NdotV * (alpha + (1.0 - alpha) * NdotL);
+	brx_float V = (0.5 / (term_v + term_l));
+
+	return V;
+}
+
+#endif
